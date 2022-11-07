@@ -1,0 +1,587 @@
+diff --git a/include/dxc/Support/Global.h b/include/dxc/Support/Global.h
+index 9dfa47400..7e7291559 100644
+--- a/include/dxc/Support/Global.h
++++ b/include/dxc/Support/Global.h
+@@ -24,6 +24,9 @@ typedef _Return_type_success_(return >= 0) long HRESULT;
+ #endif // !_HRESULT_DEFINED
+ #endif // _WIN32
+ 
++#ifdef __MINGW32__
++#include <objidl.h>
++#endif
+ #include <stdarg.h>
+ #include <system_error>
+ #include "dxc/Support/exception.h"
+diff --git a/include/dxc/Support/WinAdapter.h b/include/dxc/Support/WinAdapter.h
+index 39007a432..023a36f5e 100644
+--- a/include/dxc/Support/WinAdapter.h
++++ b/include/dxc/Support/WinAdapter.h
+@@ -15,7 +15,13 @@
+ #ifndef LLVM_SUPPORT_WIN_ADAPTER_H
+ #define LLVM_SUPPORT_WIN_ADAPTER_H
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) || defined(__MINGW32__)
++
++// For MinGW, clang in GNU mode, Zig, etc. compilers we will emulate ATL types which are not
++// available in the MinGW headers yet.
++#ifdef __MINGW32__
++#include <windows.h>
++#endif // __MINGW32__
+ 
+ #ifdef __cplusplus
+ #include <atomic>
+@@ -38,9 +44,42 @@
+ //                             Begin: Macro Definitions
+ //
+ //===----------------------------------------------------------------------===//
+-#define C_ASSERT(expr) static_assert((expr), "")
++// If MinGW, we need to define the uuid macro but nothing else.
++#ifdef __MINGW32__
++#include <guiddef.h>
++
++// Since type declaration headers (dxcapi.h) are pulled in for multiple compilation units (e.g.
++// both dxcapi.use.cpp and FileIOHelper.cpp pull it in), and because MinGW UUID declarations need
++// to export a customization of the __mingw_uuidof<type>, we would run into duplicate symbols
++// across compilation units. To workaround this, we instead define CROSS_PLATFORM_UUIDOF as nothing
++// and then invoke MINGW_UUIDOF in dxcapi.use.cpp explicitly for each COM interface we wish to
++// export as our public API.
++#define CROSS_PLATFORM_UUIDOF(type, spec)
++
++#define MINGW_UUIDOF(type, spec)                                              \
++    extern "C++" {                                                            \
++    struct __declspec(uuid(spec)) type;                                       \
++    template<> const GUID &__mingw_uuidof<type>() {                           \
++        static constexpr IID __uuid_inst = guid_from_string(spec);            \
++        return __uuid_inst;                                                   \
++    }                                                                         \
++    template<> const GUID &__mingw_uuidof<type*>() {                          \
++        return __mingw_uuidof<type>();                                        \
++    }                                                                         \
++    }
++
++#endif // __MINGW32__
++
++// If it is GCC, there is no UUID support and we must emulate it.
++#if !defined(__clang__) && !defined(__MINGW32__)
++#define __EMULATE_UUID 1
++#endif // !defined(__clang__) && !defined(__MINGW32__)
++
+ #define ATLASSERT assert
+ 
++#ifndef __MINGW32__
++#define C_ASSERT(expr) static_assert((expr), "")
++
+ #define CoTaskMemAlloc malloc
+ #define CoTaskMemFree free
+ 
+@@ -48,11 +87,6 @@
+ 
+ #define _countof(a) (sizeof(a) / sizeof(*(a)))
+ 
+-// If it is GCC, there is no UUID support and we must emulate it.
+-#ifndef __clang__
+-#define __EMULATE_UUID 1
+-#endif // __clang__
+-
+ #ifdef __EMULATE_UUID
+ #define __declspec(x)
+ #endif // __EMULATE_UUID
+@@ -189,6 +223,8 @@
+ 
+ #define StringCchCopyW(dst, n, src) wcsncpy(dst, src, n)
+ 
++#endif // __MINGW32__
++
+ #define OutputDebugStringW(msg) fputws(msg, stderr)
+ 
+ #define OutputDebugStringA(msg) fputs(msg, stderr)
+@@ -213,18 +249,20 @@
+ 
+ //===--------------------- HRESULT Related Macros -------------------------===//
+ 
++#define E_NOT_VALID_STATE (HRESULT)0x8007139F
++#define E_BOUNDS (HRESULT)0x8000000B
++
++#ifndef __MINGW32__
+ #define S_OK ((HRESULT)0L)
+ #define S_FALSE ((HRESULT)1L)
+ 
+ #define E_ABORT (HRESULT)0x80004004
+ #define E_ACCESSDENIED (HRESULT)0x80070005
+-#define E_BOUNDS (HRESULT)0x8000000B
+ #define E_FAIL (HRESULT)0x80004005
+ #define E_HANDLE (HRESULT)0x80070006
+ #define E_INVALIDARG (HRESULT)0x80070057
+ #define E_NOINTERFACE (HRESULT)0x80004002
+ #define E_NOTIMPL (HRESULT)0x80004001
+-#define E_NOT_VALID_STATE (HRESULT)0x8007139F
+ #define E_OUTOFMEMORY (HRESULT)0x8007000E
+ #define E_POINTER (HRESULT)0x80004003
+ #define E_UNEXPECTED (HRESULT)0x8000FFFF
+@@ -236,12 +274,14 @@
+ #define HRESULT_FROM_WIN32(x)                                                  \
+   (HRESULT)(x) <= 0 ? (HRESULT)(x)                                             \
+                     : (HRESULT)(((x)&0x0000FFFF) | (7 << 16) | 0x80000000)
++#endif // __MINGW32__
+ 
+ //===----------------------------------------------------------------------===//
+ //
+ //                         Begin: Disable SAL Annotations
+ //
+ //===----------------------------------------------------------------------===//
++#ifndef __MINGW32__
+ #define _In_
+ #define _In_z_
+ #define _In_opt_
+@@ -341,6 +381,7 @@
+ #define __fastcall
+ #define __clrcall
+ #endif // __GNUC__
++#endif // __MINGW32__
+ 
+ //===----------------------------------------------------------------------===//
+ //
+@@ -349,6 +390,7 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #ifdef __cplusplus
++#ifndef __MINGW32__
+ 
+ typedef unsigned char BYTE, UINT8;
+ typedef unsigned char *LPBYTE;
+@@ -400,9 +442,11 @@ typedef const void *LPCVOID;
+ typedef std::nullptr_t nullptr_t;
+ 
+ typedef signed int HRESULT;
++#endif // __MINGW32__
+ 
+ //===--------------------- Handle Types -----------------------------------===//
+ 
++#ifndef __MINGW32__
+ typedef void *HANDLE;
+ 
+ #define DECLARE_HANDLE(name)                                                   \
+@@ -417,9 +461,11 @@ typedef void *HMODULE;
+ #define STD_INPUT_HANDLE ((DWORD)-10)
+ #define STD_OUTPUT_HANDLE ((DWORD)-11)
+ #define STD_ERROR_HANDLE ((DWORD)-12)
++#endif // __MINGW32__
+ 
+ //===--------------------- ID Types and Macros for COM --------------------===//
+ 
++#ifndef __MINGW32__
+ #ifdef __EMULATE_UUID
+ struct GUID
+ #else  // __EMULATE_UUID
+@@ -467,9 +513,11 @@ inline bool IsEqualIID(REFIID riid1, REFIID riid2) {
+ inline bool IsEqualCLSID(REFCLSID rclsid1, REFCLSID rclsid2) {
+   return IsEqualGUID(rclsid1, rclsid2);
+ }
++#endif // __MINGW32__
+ 
+ //===--------------------- Struct Types -----------------------------------===//
+ 
++#ifndef __MINGW32__
+ typedef struct _FILETIME {
+   DWORD dwLowDateTime;
+   DWORD dwHighDateTime;
+@@ -541,12 +589,11 @@ enum tagSTATFLAG {
+   STATFLAG_NONAME = 1,
+   STATFLAG_NOOPEN = 2
+ };
++#endif // __MINGW32__
+ 
+ //===--------------------- UUID Related Macros ----------------------------===//
+ 
+-#ifdef __EMULATE_UUID
+-
+-// The following macros are defined to facilitate the lack of 'uuid' on Linux.
++#if defined(__EMULATE_UUID) || defined(__MINGW32__)
+ 
+ constexpr uint8_t nybble_from_hex(char c) {
+   return ((c >= '0' && c <= '9')
+@@ -582,6 +629,11 @@ constexpr GUID guid_from_string(const char str[37]) {
+                byte_from_hexstr(str + 32), byte_from_hexstr(str + 34)}};
+ }
+ 
++#ifndef __MINGW32__
++#ifdef __EMULATE_UUID
++
++// The following macros are defined to facilitate the lack of 'uuid' on Linux.
++
+ template <typename interface> inline GUID __emulated_uuidof();
+ 
+ #define CROSS_PLATFORM_UUIDOF(interface, spec)                                 \
+@@ -610,9 +662,12 @@ template <typename T> inline void **IID_PPV_ARGS_Helper(T **pp) {
+ #define IID_PPV_ARGS(ppType) __uuidof(**(ppType)), IID_PPV_ARGS_Helper(ppType)
+ 
+ #endif // __EMULATE_UUID
++#endif // __MINGW32__
++#endif // defined(__EMULATE_UUID) || defined(__MINGW32__)
+ 
+ //===--------------------- COM Interfaces ---------------------------------===//
+ 
++#ifndef __MINGW32__
+ CROSS_PLATFORM_UUIDOF(IUnknown, "00000000-0000-0000-C000-000000000046")
+ struct IUnknown {
+   IUnknown() : m_count(0) {};
+@@ -668,6 +723,7 @@ struct IStream : public ISequentialStream {
+ 
+   virtual HRESULT Clone(IStream **ppstm) = 0;
+ };
++#endif // __MINGW32__
+ 
+ //===--------------------- COM Pointer Types ------------------------------===//
+ 
+@@ -930,9 +986,11 @@ public:
+ 
+ //===--------------------------- BSTR Allocation --------------------------===//
+ 
++#ifndef __MINGW32__
+ void SysFreeString(BSTR bstrString);
+ // Allocate string with length prefix
+ BSTR SysAllocStringLen(const OLECHAR *strIn, UINT ui);
++#endif // __MINGW32__
+ 
+ //===--------------------- UTF-8 Related Types ----------------------------===//
+ 
+@@ -1024,6 +1082,6 @@ private:
+ 
+ #endif // __cplusplus
+ 
+-#endif // _WIN32
++#endif // !defined(_WIN32) || defined(__MINGW32__)
+ 
+ #endif // LLVM_SUPPORT_WIN_ADAPTER_H
+diff --git a/include/dxc/Support/WinFunctions.h b/include/dxc/Support/WinFunctions.h
+index 0f1efe3e6..1b38759f9 100644
+--- a/include/dxc/Support/WinFunctions.h
++++ b/include/dxc/Support/WinFunctions.h
+@@ -15,6 +15,11 @@
+ #ifndef LLVM_SUPPORT_WINFUNCTIONS_H
+ #define LLVM_SUPPORT_WINFUNCTIONS_H
+ 
++#ifdef __MINGW32__
++#include "dxc/Support/WinAdapter.h"
++HRESULT UInt32Mult(UINT a, UINT b, UINT *out);
++#endif
++
+ #ifndef _WIN32
+ 
+ #include "dxc/Support/WinAdapter.h"
+diff --git a/include/dxc/Support/WinIncludes.h b/include/dxc/Support/WinIncludes.h
+index 80178d509..38d18bf2c 100644
+--- a/include/dxc/Support/WinIncludes.h
++++ b/include/dxc/Support/WinIncludes.h
+@@ -10,7 +10,10 @@
+ 
+ #pragma once
+ 
+-#ifdef _MSC_VER
++// Always include WinAdapter, for MSC it will do nothing but for MinGW it will emulate ATL.
++#include "dxc/Support/WinAdapter.h"
++
++#if defined(_MSC_VER) || defined(__MINGW32__)
+ 
+ // mingw-w64 tends to define it as 0x0502 in its headers.
+ #undef _WIN32_WINNT
+@@ -40,7 +43,9 @@
+ 
+ #include <windows.h>
+ #include <unknwn.h>
++#ifndef __MINGW32__
+ #include <atlbase.h> // atlbase.h needs to come before strsafe.h
++#endif // __MINGW32__
+ #include <strsafe.h>
+ #include <intsafe.h>
+ #include <ObjIdl.h>
+@@ -57,10 +62,9 @@ template <class T> void swap(CComHeapPtr<T> &a, CComHeapPtr<T> &b) {
+   b.m_pData = c;
+ }
+ 
+-#else // _MSC_VER
+-
+-#include "dxc/Support/WinAdapter.h"
++#endif // defined(_MSC_VER) || defined(__MINGW32__)
+ 
++#if !defined(_MSC_VER) && !defined(__MINGW32__)
+ #ifdef __cplusplus
+ // Define operator overloads to enable bit operations on enum values that are
+ // used to define flags. Use DEFINE_ENUM_FLAG_OPERATORS(YOUR_TYPE) to enable these
+@@ -109,4 +113,4 @@ inline ENUMTYPE &operator ^= (ENUMTYPE &a, ENUMTYPE b) { return (ENUMTYPE &)(((_
+ #define DEFINE_ENUM_FLAG_OPERATORS(ENUMTYPE) // NOP, C allows these operators.
+ #endif
+ 
+-#endif // _MSC_VER
++#endif // !defined(_MSC_VER) && !defined(__MINGW32__)
+diff --git a/include/llvm/Support/Atomic.h b/include/llvm/Support/Atomic.h
+index 9ec23e827..b486d8498 100644
+--- a/include/llvm/Support/Atomic.h
++++ b/include/llvm/Support/Atomic.h
+@@ -16,6 +16,17 @@
+ 
+ #include "llvm/Support/DataTypes.h"
+ 
++#ifdef __MINGW32__
++#define __int64 long long
++#define NOMINMAX 1
++#include <windows.h>
++// HACK: Pretend we're CYGWIN when including intrin.h, otherwise the MinGW headers will not know
++// that strcat and other conflicting symbols are already defined.
++#define __CYGWIN__
++#include <intrin.h>
++#undef __CYGWIN__
++#endif // __MINGW32__
++
+ namespace llvm {
+   namespace sys {
+     void MemoryFence();
+diff --git a/lib/DxcSupport/WinAdapter.cpp b/lib/DxcSupport/WinAdapter.cpp
+index 27bd7c3c7..00aaf3760 100644
+--- a/lib/DxcSupport/WinAdapter.cpp
++++ b/lib/DxcSupport/WinAdapter.cpp
+@@ -7,11 +7,45 @@
+ //
+ //===----------------------------------------------------------------------===//
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) || defined(__MINGW32__)
+ 
+ #include "dxc/Support/WinAdapter.h"
+ #include "dxc/Support/WinFunctions.h"
+ 
++//===---------------------- Char converstion ------------------------------===//
++
++const char *CPToLocale(uint32_t CodePage) {
++#ifdef __APPLE__
++  static const char *utf8 = "en_US.UTF-8";
++  static const char *iso88591 = "en_US.ISO8859-1";
++#else
++  static const char *utf8 = "en_US.utf8";
++  static const char *iso88591 = "en_US.iso88591";
++#endif
++  if (CodePage == CP_UTF8) {
++    return utf8;
++  } else if (CodePage == CP_ACP) {
++    // Experimentation suggests that ACP is expected to be ISO-8859-1
++    return iso88591;
++  }
++  return nullptr;
++}
++
++//===--------------------------- CHandle -------------------------------===//
++
++CHandle::CHandle(HANDLE h) { m_h = h; }
++CHandle::~CHandle() { CloseHandle(m_h); }
++CHandle::operator HANDLE() const throw() { return m_h; }
++
++//===--------------------------- CAllocator -------------------------------===//
++
++void *CAllocator::Reallocate(void *p, size_t nBytes) throw() {
++  return realloc(p, nBytes);
++}
++void *CAllocator::Allocate(size_t nBytes) throw() { return malloc(nBytes); }
++void CAllocator::Free(void *p) throw() { free(p); }
++
++#ifndef __MINGW32__
+ //===--------------------------- IUnknown ---------------------------------===//
+ 
+ ULONG IUnknown::AddRef() {
+@@ -37,14 +71,6 @@ HRESULT IMalloc::QueryInterface(REFIID riid, void **ppvObject) {
+   return E_NOINTERFACE;
+ }
+ 
+-//===--------------------------- CAllocator -------------------------------===//
+-
+-void *CAllocator::Reallocate(void *p, size_t nBytes) throw() {
+-  return realloc(p, nBytes);
+-}
+-void *CAllocator::Allocate(size_t nBytes) throw() { return malloc(nBytes); }
+-void CAllocator::Free(void *p) throw() { free(p); }
+-
+ //===--------------------------- BSTR Allocation --------------------------===//
+ 
+ void SysFreeString(BSTR bstrString) {
+@@ -75,29 +101,6 @@ BSTR SysAllocStringLen(const OLECHAR *strIn, UINT ui) {
+   return strOut;
+ }
+ 
+-//===---------------------- Char converstion ------------------------------===//
++#endif // __MINGW32__
+ 
+-const char *CPToLocale(uint32_t CodePage) {
+-#ifdef __APPLE__
+-  static const char *utf8 = "en_US.UTF-8";
+-  static const char *iso88591 = "en_US.ISO8859-1";
+-#else
+-  static const char *utf8 = "en_US.utf8";
+-  static const char *iso88591 = "en_US.iso88591";
+-#endif
+-  if (CodePage == CP_UTF8) {
+-    return utf8;
+-  } else if (CodePage == CP_ACP) {
+-    // Experimentation suggests that ACP is expected to be ISO-8859-1
+-    return iso88591;
+-  }
+-  return nullptr;
+-}
+-
+-//===--------------------------- CHandle -------------------------------===//
+-
+-CHandle::CHandle(HANDLE h) { m_h = h; }
+-CHandle::~CHandle() { CloseHandle(m_h); }
+-CHandle::operator HANDLE() const throw() { return m_h; }
+-
+-#endif
++#endif // !defined(_WIN32) || defined(__MINGW32__)
+\ No newline at end of file
+diff --git a/lib/DxcSupport/WinFunctions.cpp b/lib/DxcSupport/WinFunctions.cpp
+index bf2b25e4f..c79af0ee3 100644
+--- a/lib/DxcSupport/WinFunctions.cpp
++++ b/lib/DxcSupport/WinFunctions.cpp
+@@ -12,7 +12,8 @@
+ //
+ //===----------------------------------------------------------------------===//
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) || defined(__MINGW32__)
++
+ #include <fcntl.h>
+ #include <map>
+ #include <string.h>
+@@ -21,6 +22,17 @@
+ 
+ #include "dxc/Support/WinFunctions.h"
+ 
++HRESULT UInt32Mult(UINT a, UINT b, UINT *out) {
++  uint64_t result = (uint64_t)a * (uint64_t)b;
++  if (result > uint64_t(UINT_MAX))
++    return ERROR_ARITHMETIC_OVERFLOW;
++
++  *out = (uint32_t)result;
++  return S_OK;
++}
++
++#ifndef __MINGW32__
++
+ HRESULT StringCchCopyEx(LPSTR pszDest, size_t cchDest, LPCSTR pszSrc,
+                         LPSTR *ppszDestEnd, size_t *pcchRemaining, DWORD dwFlags) {
+   assert(dwFlags == 0 && "dwFlag values not supported in StringCchCopyEx");
+@@ -89,14 +101,6 @@ HRESULT SizeTToInt(size_t in, int *out) {
+   }
+   return hr;
+ }
+-HRESULT UInt32Mult(UINT a, UINT b, UINT *out) {
+-  uint64_t result = (uint64_t)a * (uint64_t)b;
+-  if (result > uint64_t(UINT_MAX))
+-    return ERROR_ARITHMETIC_OVERFLOW;
+-
+-  *out = (uint32_t)result;
+-  return S_OK;
+-}
+ 
+ int strnicmp(const char *str1, const char *str2, size_t count) {
+   size_t i = 0;
+@@ -351,4 +355,6 @@ HANDLE GetProcessHeap() {
+   return (HANDLE)&g_processHeap;
+ }
+ 
+-#endif // _WIN32
++#endif // __MINGW32__
++
++#endif // !defined(_WIN32) || defined(__MINGW32__)
+diff --git a/lib/DxcSupport/dxcapi.use.cpp b/lib/DxcSupport/dxcapi.use.cpp
+index 62485d3c4..c9e136d2c 100644
+--- a/lib/DxcSupport/dxcapi.use.cpp
++++ b/lib/DxcSupport/dxcapi.use.cpp
+@@ -16,6 +16,36 @@
+ #include "dxc/Support/FileIOHelper.h"
+ #include "dxc/Support/WinFunctions.h"
+ 
++// For MinGW, export specializations for our public COM interface. See WinAdapter.h for more info.
++#ifdef __MINGW32__
++MINGW_UUIDOF(IDxcBlob, "8BA5FB08-5195-40e2-AC58-0D989C3A0102")
++MINGW_UUIDOF(IDxcBlobEncoding, "7241d424-2646-4191-97c0-98e96e42fc68")
++MINGW_UUIDOF(IDxcBlobUtf16, "A3F84EAB-0FAA-497E-A39C-EE6ED60B2D84")
++MINGW_UUIDOF(IDxcBlobUtf8, "3DA636C9-BA71-4024-A301-30CBF125305B")
++MINGW_UUIDOF(IDxcIncludeHandler, "7f61fc7d-950d-467f-b3e3-3c02fb49187c")
++MINGW_UUIDOF(IDxcCompilerArgs, "73EFFE2A-70DC-45F8-9690-EFF64C02429D")
++MINGW_UUIDOF(IDxcLibrary, "e5204dc7-d18c-4c3c-bdfb-851673980fe7")
++MINGW_UUIDOF(IDxcOperationResult, "CEDB484A-D4E9-445A-B991-CA21CA157DC2")
++MINGW_UUIDOF(IDxcCompiler, "8c210bf3-011f-4422-8d70-6f9acb8db617")
++MINGW_UUIDOF(IDxcCompiler2, "A005A9D9-B8BB-4594-B5C9-0E633BEC4D37")
++MINGW_UUIDOF(IDxcLinker, "F1B5BE2A-62DD-4327-A1C2-42AC1E1E78E6")
++MINGW_UUIDOF(IDxcUtils, "4605C4CB-2019-492A-ADA4-65F20BB7D67F")
++MINGW_UUIDOF(IDxcResult, "58346CDA-DDE7-4497-9461-6F87AF5E0659")
++MINGW_UUIDOF(IDxcExtraOutputs, "319b37a2-a5c2-494a-a5de-4801b2faf989")
++MINGW_UUIDOF(IDxcCompiler3, "228B4687-5A6A-4730-900C-9702B2203F54")
++MINGW_UUIDOF(IDxcValidator, "A6E82BD2-1FD7-4826-9811-2857E797F49A")
++MINGW_UUIDOF(IDxcValidator2, "458e1fd1-b1b2-4750-a6e1-9c10f03bed92")
++MINGW_UUIDOF(IDxcContainerBuilder, "334b1f50-2292-4b35-99a1-25588d8c17fe")
++MINGW_UUIDOF(IDxcAssembler, "091f7a26-1c1f-4948-904b-e6e3a8a771d5")
++MINGW_UUIDOF(IDxcContainerReflection, "d2c21b26-8350-4bdc-976a-331ce6f4c54c")
++MINGW_UUIDOF(IDxcOptimizerPass, "AE2CD79F-CC22-453F-9B6B-B124E7A5204C")
++MINGW_UUIDOF(IDxcOptimizer, "25740E2E-9CBA-401B-9119-4FB42F39F270")
++MINGW_UUIDOF(IDxcVersionInfo, "b04f5b50-2059-4f12-a8ff-a1e0cde1cc7e")
++MINGW_UUIDOF(IDxcVersionInfo2, "fb6904c4-42f0-4b62-9c46-983af7da7c83")
++MINGW_UUIDOF(IDxcVersionInfo3, "5e13e843-9d25-473c-9ad2-03b2d0b44b1e")
++MINGW_UUIDOF(IDxcPdbUtils, "E6C9647E-9D6A-4C3B-B94C-524B5A6C343D")
++#endif
++
+ namespace dxc {
+ 
+ #ifdef _WIN32
+@@ -33,7 +63,7 @@ static std::string GetWin32ErrorMessage(DWORD err) {
+   DWORD formattedMsgLen =
+       FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                     nullptr, err, 0, formattedMsg, _countof(formattedMsg), 0);
+-  if (formattedMsg > 0 && formattedMsgLen < _countof(formattedMsg)) {
++  if (formattedMsgLen > 0 && formattedMsgLen < _countof(formattedMsg)) {
+     TrimEOL(formattedMsg);
+     return std::string(formattedMsg);
+   }
+diff --git a/lib/HLSL/DxilContainerReflection.cpp b/lib/HLSL/DxilContainerReflection.cpp
+index 979029fec..5092107cd 100644
+--- a/lib/HLSL/DxilContainerReflection.cpp
++++ b/lib/HLSL/DxilContainerReflection.cpp
+@@ -1349,7 +1349,11 @@ static unsigned CalcTypeSize(Type *Ty, unsigned &alignment) {
+ }
+ 
+ static unsigned CalcResTypeSize(DxilModule &M, DxilResource &R) {
++  #ifndef __MINGW32__
++  // avoids:
++  //  error: object of type 'hlsl::DxilModule' cannot be assigned because its copy assignment operator is implicitly deleted
+   UNREFERENCED_PARAMETER(M);
++  #endif
+   Type *Ty = R.GetHLSLType()->getPointerElementType();
+   if (R.IsStructuredBuffer()) {
+     Ty = dxilutil::StripArrayTypes(Ty);
+diff --git a/lib/IR/PassRegistry.cpp b/lib/IR/PassRegistry.cpp
+index b77d2bf36..a9de58aba 100644
+--- a/lib/IR/PassRegistry.cpp
++++ b/lib/IR/PassRegistry.cpp
+@@ -35,7 +35,9 @@ using namespace llvm;
+ // A simple global initialized at DllMain-time will do (still does more work
+ // than we should likely perform though).
+ static uint32_t g_PassRegistryTid;
++#ifndef __MINGW32__
+ extern "C" uint32_t __stdcall GetCurrentThreadId(void);
++#endif // __MINGW32__
+ static void CheckThreadId() {
+   if (g_PassRegistryTid == 0)
+     g_PassRegistryTid = GetCurrentThreadId();
+diff --git a/lib/Support/regexec.c b/lib/Support/regexec.c
+index b161f056e..b044c0498 100644
+--- a/lib/Support/regexec.c
++++ b/lib/Support/regexec.c
+@@ -130,6 +130,9 @@
+ #define	ISSETBACK(v, n)	((v)[here - (n)])
+ /* function names */
+ #define	LNAMES			/* flag */
++#ifndef __inexpressible_readableTo
++#define __inexpressible_readableTo(size)
++#endif
+ #define _states_param_ __inexpressible_readableTo(stopmarker)
+ 
+ #include "regengine.inc"
